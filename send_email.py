@@ -15,9 +15,9 @@ BASEBALL_TEAMS = ["LAD", "NYY", "ATL"]
 
 
 def fetch():
-    today       = datetime.now()
-    date_str    = today.strftime("%A, %B %-d, %Y")
-    vol_str     = f"Vol. CDXII · No. {today.timetuple().tm_yday}"
+    today    = datetime.now()
+    date_str = today.strftime("%A, %B %-d, %Y")
+    vol_str  = f"Vol. CDXII · No. {today.timetuple().tm_yday}"
 
     # ── Indices ───────────────────────────────────────────────────────────────
     index_tickers = {
@@ -62,11 +62,11 @@ def fetch():
         if len(col) < 2:
             continue
         prev, close = col.iloc[-2], col.iloc[-1]
-        pct         = ((close - prev) / prev) * 100
-        wk52_high   = highs[ticker].dropna().max()
-        wk52_low    = lows[ticker].dropna().min()
-        rng         = wk52_high - wk52_low
-        pos         = ((close - wk52_low) / rng * 100) if rng > 0 else 50
+        pct       = ((close - prev) / prev) * 100
+        wk52_high = highs[ticker].dropna().max()
+        wk52_low  = lows[ticker].dropna().min()
+        rng       = wk52_high - wk52_low
+        pos       = ((close - wk52_low) / rng * 100) if rng > 0 else 50
         movers.append({"ticker": ticker, "price": close, "pct": pct,
                        "wk52_high": wk52_high, "wk52_low": wk52_low, "wk52_pos": pos})
 
@@ -95,8 +95,10 @@ def fetch():
 
     # ── Commodities ───────────────────────────────────────────────────────────
     comm_tickers = {
-        "Crude Oil (WTI)":"CL=F", "Gold (oz)":"GC=F",
-        "Silver (oz)":"SI=F",     "Nat. Gas":"NG=F",
+        "Crude Oil (WTI)": "CL=F",
+        "Gold (oz)":       "GC=F",
+        "Silver (oz)":     "SI=F",
+        "Nat. Gas":        "NG=F",
     }
     commodities = []
     for name, ticker in comm_tickers.items():
@@ -105,57 +107,70 @@ def fetch():
             prev, close = h["Close"].iloc[-2], h["Close"].iloc[-1]
         else:
             prev = close = h["Close"].iloc[0]
-        commodities.append({"name": name, "val": close, "pct": ((close-prev)/prev)*100})
+        commodities.append({"name": name, "val": close, "pct": ((close - prev) / prev) * 100})
 
-    # ── Treasuries ────────────────────────────────────────────────────────────
-    treasury_tickers = {"2-Year":"^IRX","5-Year":"^FVX","10-Year":"^TNX","30-Year":"^TYX"}
-    treasuries = []
-    for label, ticker in treasury_tickers.items():
-        h   = yf.Ticker(ticker).history(period="1d")
-        val = h["Close"].iloc[-1] if len(h) > 0 else 0
-        treasuries.append({"label": label, "yield": val / 10})
-
-    # ── Fear & Greed ──────────────────────────────────────────────────────────
+    # ── Fear & Greed — via alternative.me API (reliable, free, no scraping) ──
     fear_greed = fetch_fear_greed()
 
     # ── Baseball ──────────────────────────────────────────────────────────────
     baseball = fetch_baseball()
 
     return {
-        "date_str": date_str, "vol_str": vol_str,
-        "indices": indices,   "vix": vix,
-        "gainers": gainers,   "losers": losers,
-        "sectors": sectors,   "commodities": commodities,
-        "treasuries": treasuries, "fear_greed": fear_greed,
-        "baseball": baseball,
+        "date_str":    date_str,
+        "vol_str":     vol_str,
+        "indices":     indices,
+        "vix":         vix,
+        "gainers":     gainers,
+        "losers":      losers,
+        "sectors":     sectors,
+        "commodities": commodities,
+        "fear_greed":  fear_greed,
+        "baseball":    baseball,
     }
 
 
 def fetch_fear_greed():
+    """
+    Uses alternative.me's Fear & Greed API — free, reliable, no auth needed.
+    Returns score 0-100 and text classification.
+    Note: this is crypto-based F&G but widely used as a proxy for market sentiment.
+    For stock-market F&G, we derive a score from VIX instead as a fallback.
+    """
+    # First try: alternative.me (crypto F&G — widely cited)
     try:
-        url  = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        data = resp.json()
-        score  = round(data["fear_and_greed"]["score"])
-        rating = data["fear_and_greed"]["rating"].replace("_", " ").title()
-        signal_keys = [
-            ("market_momentum_sp500",  "Stock Momentum"),
-            ("stock_price_strength",   "Price Strength"),
-            ("stock_price_breadth",    "Price Breadth"),
-            ("put_call_options",       "Put/Call Ratio"),
-            ("market_volatility_vix",  "Volatility (VIX)"),
-            ("junk_bond_demand",       "Junk Bond Demand"),
-            ("safe_haven_demand",      "Safe Haven Demand"),
-        ]
-        signals = []
-        for key, label in signal_keys:
-            if key in data:
-                r = data[key].get("rating", "neutral").replace("_", " ").title()
-                signals.append({"name": label, "rating": r})
-        return {"score": score, "rating": rating, "signals": signals[:6]}
+        resp = requests.get(
+            "https://api.alternative.me/fng/?limit=1",
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        data  = resp.json()
+        score = int(data["data"][0]["value"])
+        label = data["data"][0]["value_classification"]
+        return {"score": score, "rating": label, "source": "alternative.me"}
     except Exception as e:
-        print(f"Fear & Greed fetch failed: {e}")
-        return {"score": None, "rating": "N/A", "signals": []}
+        print(f"alternative.me F&G failed: {e}")
+
+    # Fallback: derive from VIX
+    # VIX < 12 = extreme greed, 12-17 = greed, 17-20 = neutral,
+    # 20-25 = fear, 25-30 = extreme fear, 30+ = extreme fear
+    try:
+        vix_h = yf.Ticker("^VIX").history(period="1d")
+        vix   = vix_h["Close"].iloc[-1]
+        if vix < 12:
+            score, label = 85, "Extreme Greed"
+        elif vix < 17:
+            score, label = 65, "Greed"
+        elif vix < 20:
+            score, label = 50, "Neutral"
+        elif vix < 25:
+            score, label = 35, "Fear"
+        else:
+            score, label = 15, "Extreme Fear"
+        return {"score": score, "rating": label, "source": "vix"}
+    except Exception as e:
+        print(f"VIX fallback F&G failed: {e}")
+
+    return {"score": None, "rating": "N/A", "source": "none"}
 
 
 def fetch_baseball():
@@ -189,9 +204,9 @@ def fetch_baseball():
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
-def arrow(n):  return "▲" if n >= 0 else "▼"
-def sign(n):   return "+" if n >= 0 else ""
-def cc(n):     return "up" if n >= 0 else "dn"
+def arrow(n):    return "▲" if n >= 0 else "▼"
+def sign(n):     return "+" if n >= 0 else ""
+def cc(n):       return "up" if n >= 0 else "dn"
 def fmt(n, d=2): return f"{n:,.{d}f}"
 
 
@@ -222,13 +237,14 @@ def sector_bars_html(sectors):
 def mover_rows(stocks):
     rows = ""
     for s in stocks:
-        pos = round(s["wk52_pos"])
+        pos = min(max(round(s["wk52_pos"]), 2), 96)  # clamp so dot stays visible
         rows += f"""
         <tr>
           <td><strong>{s['ticker']}</strong><br><span class="wk">{s['ticker']}</span></td>
           <td class="ra">{fmt(s['price'])}</td>
           <td class="ra {cc(s['pct'])}">{sign(s['pct'])}{fmt(s['pct'])}%</td>
-          <td class="ra"><span class="wk">{fmt(s['wk52_low'],0)}–{fmt(s['wk52_high'],0)}</span><br>
+          <td class="ra">
+            <span class="wk">{fmt(s['wk52_low'], 0)}–{fmt(s['wk52_high'], 0)}</span><br>
             <span class="wkbar"><span class="wkdot" style="left:{pos}%;"></span></span>
           </td>
         </tr>"""
@@ -237,26 +253,52 @@ def mover_rows(stocks):
 
 def fear_greed_html(fg):
     if fg["score"] is None:
-        return '<div style="padding:12px 16px;font-size:12px;color:#888;">Fear &amp; Greed data unavailable today.</div>'
+        return '<div style="padding:12px 16px;font-size:12px;color:#888;">Sentiment data unavailable today.</div>'
+
     score  = fg["score"]
     rating = fg["rating"]
+
+    # needle position on semicircle (0=left, 100=right)
     angle_rad = math.radians(-90 + score * 1.8)
     nx = 65 + 48 * math.cos(angle_rad)
     ny = 65 + 48 * math.sin(angle_rad)
-    arc_color = "#888" if score < 25 else "#aaa" if score < 45 else "#bbb" if score < 55 else "#444" if score < 75 else "#111"
-    signals_html = "".join(
-        f'<div class="fg-row"><span class="fg-name">{s["name"]}</span><span class="fg-pill">{s["rating"]}</span></div>'
-        for s in fg["signals"]
-    )
+
+    # active segment color
+    if score < 25:
+        arc_color = "#999"
+    elif score < 45:
+        arc_color = "#bbb"
+    elif score < 55:
+        arc_color = "#ccc"
+    elif score < 75:
+        arc_color = "#555"
+    else:
+        arc_color = "#111"
+
+    # score band labels for the gauge
+    bands = [
+        ("Extreme Fear", 0),
+        ("Fear", 25),
+        ("Neutral", 45),
+        ("Greed", 55),
+        ("Extreme Greed", 75),
+    ]
+    bands_html = ""
+    for label, threshold in bands:
+        active = "font-weight:700;color:#111;" if rating.lower() in label.lower() or label.lower() in rating.lower() else "color:#bbb;"
+        bands_html += f'<div style="font-size:9px;{active}padding:2px 0;">{label}</div>'
+
+    source_note = "" if fg["source"] == "alternative.me" else '<span style="font-size:9px;color:#bbb;"> (derived from VIX)</span>'
+
     return f"""
     <div class="fg-wrap">
       <div class="fg-gauge">
         <svg viewBox="0 0 130 70" xmlns="http://www.w3.org/2000/svg" style="width:130px;height:68px;">
           <path d="M10,65 A55,55 0 0,1 120,65" fill="none" stroke="#eee" stroke-width="10" stroke-linecap="round"/>
-          <path d="M10,65 A55,55 0 0,1 37,21"  fill="none" stroke="#ddd" stroke-width="10" stroke-linecap="butt"/>
-          <path d="M37,21 A55,55 0 0,1 65,10"  fill="none" stroke="#ccc" stroke-width="10" stroke-linecap="butt"/>
-          <path d="M65,10 A55,55 0 0,1 80,12"  fill="none" stroke="#ccc" stroke-width="10" stroke-linecap="butt"/>
-          <path d="M80,12 A55,55 0 0,1 107,31" fill="none" stroke="{arc_color}" stroke-width="10" stroke-linecap="butt"/>
+          <path d="M10,65 A55,55 0 0,1 37,21"   fill="none" stroke="#ddd" stroke-width="10" stroke-linecap="butt"/>
+          <path d="M37,21 A55,55 0 0,1 65,10"   fill="none" stroke="#ccc" stroke-width="10" stroke-linecap="butt"/>
+          <path d="M65,10 A55,55 0 0,1 80,12"   fill="none" stroke="#ccc" stroke-width="10" stroke-linecap="butt"/>
+          <path d="M80,12 A55,55 0 0,1 107,31"  fill="none" stroke="{arc_color}" stroke-width="10" stroke-linecap="butt"/>
           <path d="M107,31 A55,55 0 0,1 120,65" fill="none" stroke="#ddd" stroke-width="10" stroke-linecap="round"/>
           <line x1="65" y1="65" x2="{nx:.1f}" y2="{ny:.1f}" stroke="#111" stroke-width="2" stroke-linecap="round"/>
           <circle cx="65" cy="65" r="3.5" fill="#111"/>
@@ -265,12 +307,12 @@ def fear_greed_html(fg):
         </svg>
         <div class="fg-score">
           <div class="fg-num">{score}</div>
-          <div class="fg-lbl">{rating}</div>
+          <div class="fg-lbl">{rating}{source_note}</div>
         </div>
       </div>
       <div class="fg-detail">
-        <div class="fg-title">Signal Breakdown</div>
-        {signals_html}
+        <div class="fg-title">Sentiment Scale</div>
+        {bands_html}
       </div>
     </div>"""
 
@@ -317,13 +359,11 @@ def build_html(d):
         </div>""" for idx in d["indices"])
 
     comm_html = "".join(
-        f'<div class="ci"><span class="cl2">{c["name"]}</span><span class="{cc(c["pct"])}">{sign(c["pct"])}{fmt(c["pct"])}% &nbsp;${fmt(c["val"])}</span></div>'
+        f'<div class="ci"><span class="cl2">{c["name"]}</span>'
+        f'<span class="{cc(c["pct"])}">{sign(c["pct"])}{fmt(c["pct"])}%&nbsp;&nbsp;${fmt(c["val"])}</span></div>'
         for c in d["commodities"]
     )
-    treasury_html = "".join(
-        f'<div class="yc"><div class="yl">{t["label"]}</div><div class="yn">{fmt(t["yield"])}%</div></div>'
-        for t in d["treasuries"]
-    )
+
     yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%B %-d, %Y")
 
     return f"""<!DOCTYPE html>
@@ -331,7 +371,7 @@ def build_html(d):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>The Market Close — {d['date_str']}</title>
+<title>The FiDi Market Close — {d['date_str']}</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap');
 *{{box-sizing:border-box;margin:0;padding:0;}}
@@ -353,15 +393,12 @@ body{{background:#f4f4f0;padding:16px 8px;}}
 .up{{color:#111;}}.dn{{color:#888;}}
 .brow{{padding:5px 16px;font-size:clamp(10px,2.5vw,10.5px);color:#555;border-bottom:1px solid #ccc;background:#f9f9f9;display:flex;flex-wrap:wrap;gap:4px 16px;}}
 .fg-wrap{{padding:14px 16px;border-bottom:1px solid #ccc;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}}
-.fg-gauge{{position:relative;width:130px;height:68px;flex-shrink:0;}}
-.fg-score{{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);text-align:center;}}
+.fg-gauge{{position:relative;width:130px;height:80px;flex-shrink:0;}}
+.fg-score{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);text-align:center;white-space:nowrap;}}
 .fg-num{{font-family:'Playfair Display',serif;font-size:22px;font-weight:900;line-height:1;}}
-.fg-lbl{{font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:#555;margin-top:1px;}}
-.fg-detail{{flex:1;min-width:160px;}}
-.fg-title{{font-size:9px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;margin-bottom:8px;}}
-.fg-row{{display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:3px 0;border-bottom:1px solid #f2f2f2;}}
-.fg-row:last-child{{border-bottom:none;}}.fg-name{{color:#555;}}
-.fg-pill{{font-size:9px;letter-spacing:.06em;padding:1px 5px;border:1px solid #bbb;text-transform:uppercase;}}
+.fg-lbl{{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#555;margin-top:1px;}}
+.fg-detail{{flex:1;min-width:140px;}}
+.fg-title{{font-size:9px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;margin-bottom:6px;}}
 .tc{{display:grid;grid-template-columns:1fr;border-bottom:1px solid #ccc;}}
 @media(min-width:480px){{.tc{{grid-template-columns:1fr 1fr;}}}}
 .cl{{padding:12px 16px;border-bottom:1px solid #ccc;}}.cr{{padding:12px 16px;}}
@@ -379,13 +416,6 @@ body{{background:#f4f4f0;padding:16px 8px;}}
 .comm{{padding:10px 16px;border-bottom:1px solid #ccc;}}
 .ci{{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0f0f0;font-size:clamp(11px,2.8vw,12px);}}
 .ci:last-child{{border-bottom:none;}}.cl2{{color:#666;}}
-.yr{{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #ccc;}}
-@media(min-width:480px){{.yr{{display:flex;}}}}
-.yc{{flex:1;text-align:center;padding:10px 0;border-right:1px solid #eee;border-bottom:1px solid #eee;}}
-.yc:nth-child(2n){{border-right:none;}}.yc:nth-child(3),.yc:nth-child(4){{border-bottom:none;}}
-@media(min-width:480px){{.yc:nth-child(2n){{border-right:1px solid #eee;}}.yc:last-child{{border-right:none;}}.yc{{border-bottom:none;}}}}
-.yn{{font-family:'Playfair Display',serif;font-size:clamp(14px,3.5vw,16px);font-weight:700;}}
-.yl{{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#888;}}
 .bb-wrap{{padding:12px 16px;border-bottom:1px solid #ccc;}}
 .bb-game{{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #eee;gap:8px;}}
 .bb-game:last-child{{border-bottom:none;}}
@@ -406,7 +436,7 @@ body{{background:#f4f4f0;padding:16px 8px;}}
 <div class="ew">
 
   <div class="eh">
-    <div class="flag">The Market Close</div>
+    <div class="flag">The FiDi Market Close</div>
     <div class="tagline">
       Presented by <a href="https://www.learnatfidi.com">Financial District</a> &nbsp;·&nbsp;
       We teach kids how to invest. &nbsp;·&nbsp;
@@ -425,7 +455,7 @@ body{{background:#f4f4f0;padding:16px 8px;}}
     <span>VIX: <strong>{fmt(d['vix'])}</strong></span>
   </div>
 
-  <div class="sl">Market Sentiment — CNN Fear &amp; Greed Index</div>
+  <div class="sl">Market Sentiment</div>
   {fear_greed_html(d['fear_greed'])}
 
   <div class="sl">Movers</div>
@@ -452,14 +482,11 @@ body{{background:#f4f4f0;padding:16px 8px;}}
   <div class="sl">Commodities</div>
   <div class="comm">{comm_html}</div>
 
-  <div class="sl">U.S. Treasury Yields</div>
-  <div class="yr">{treasury_html}</div>
-
   <div class="sl">Last Night's Baseball — {yesterday_str}</div>
   <div class="bb-wrap">{baseball_html(d['baseball'], yesterday_str)}</div>
 
   <div class="ft">
-    <strong>The Market Close</strong> &bull; Presented by <a href="https://www.learnatfidi.com"><strong>Financial District</strong></a> &bull; <a href="https://www.learnatfidi.com">LearnAtFidi.com</a><br>
+    <strong>The FiDi Market Close</strong> &bull; Presented by <a href="https://www.learnatfidi.com"><strong>Financial District</strong></a> &bull; <a href="https://www.learnatfidi.com">LearnAtFidi.com</a><br>
     Published Monday–Friday after 4:00 p.m. ET &bull; Not investment advice.<br>
     &copy; 2026 Financial District &bull; <a href="#">Unsubscribe</a> &bull; <a href="#">View in browser</a>
   </div>
@@ -473,16 +500,16 @@ def main():
     print("Fetching market data...")
     data = fetch()
     print(f"Date: {data['date_str']}")
-    print(f"Fear & Greed: {data['fear_greed']['score']} ({data['fear_greed']['rating']})")
+    print(f"Fear & Greed: {data['fear_greed']['score']} ({data['fear_greed']['rating']}) via {data['fear_greed']['source']}")
     print(f"Baseball games: {len(data['baseball'])}")
 
     html = build_html(data)
 
     print(f"Sending to {TO_EMAIL}...")
     response = resend.Emails.send({
-        "from":    f"The Market Close <{FROM_EMAIL}>",
+        "from":    f"The FiDi Market Close <{FROM_EMAIL}>",
         "to":      [TO_EMAIL],
-        "subject": f"The Market Close — {data['date_str']}",
+        "subject": f"The FiDi Market Close — {data['date_str']}",
         "html":    html,
     })
     print(f"Sent. ID: {response['id']}")
