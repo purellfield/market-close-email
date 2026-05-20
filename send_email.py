@@ -1,5 +1,4 @@
 import os
-import math
 import yfinance as yf
 from datetime import datetime, timedelta
 import requests
@@ -109,8 +108,8 @@ def fetch():
             prev = close = h["Close"].iloc[0]
         commodities.append({"name": name, "val": close, "pct": ((close - prev) / prev) * 100})
 
-    # ── Fear & Greed — via alternative.me API (reliable, free, no scraping) ──
-    fear_greed = fetch_fear_greed()
+    # ── S&P 500 YTD performance ───────────────────────────────────────────────
+    ytd = fetch_ytd()
 
     # ── Baseball ──────────────────────────────────────────────────────────────
     baseball = fetch_baseball()
@@ -124,53 +123,73 @@ def fetch():
         "losers":      losers,
         "sectors":     sectors,
         "commodities": commodities,
-        "fear_greed":  fear_greed,
+        "ytd":         ytd,
         "baseball":    baseball,
     }
 
 
-def fetch_fear_greed():
-    """
-    Uses alternative.me's Fear & Greed API — free, reliable, no auth needed.
-    Returns score 0-100 and text classification.
-    Note: this is crypto-based F&G but widely used as a proxy for market sentiment.
-    For stock-market F&G, we derive a score from VIX instead as a fallback.
-    """
-    # First try: alternative.me (crypto F&G — widely cited)
+def fetch_ytd():
+    """Pull S&P 500 YTD performance: return, high, low, monthly breakdown, sparkline points."""
     try:
-        resp = requests.get(
-            "https://api.alternative.me/fng/?limit=1",
-            timeout=8,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        data  = resp.json()
-        score = int(data["data"][0]["value"])
-        label = data["data"][0]["value_classification"]
-        return {"score": score, "rating": label, "source": "alternative.me"}
-    except Exception as e:
-        print(f"alternative.me F&G failed: {e}")
+        today = datetime.now()
+        jan1  = datetime(today.year, 1, 1)
+        h     = yf.Ticker("^GSPC").history(start=jan1.strftime("%Y-%m-%d"))
+        if len(h) < 2:
+            return None
 
-    # Fallback: derive from VIX
-    # VIX < 12 = extreme greed, 12-17 = greed, 17-20 = neutral,
-    # 20-25 = fear, 25-30 = extreme fear, 30+ = extreme fear
-    try:
-        vix_h = yf.Ticker("^VIX").history(period="1d")
-        vix   = vix_h["Close"].iloc[-1]
-        if vix < 12:
-            score, label = 85, "Extreme Greed"
-        elif vix < 17:
-            score, label = 65, "Greed"
-        elif vix < 20:
-            score, label = 50, "Neutral"
-        elif vix < 25:
-            score, label = 35, "Fear"
-        else:
-            score, label = 15, "Extreme Fear"
-        return {"score": score, "rating": label, "source": "vix"}
-    except Exception as e:
-        print(f"VIX fallback F&G failed: {e}")
+        open_price  = h["Close"].iloc[0]   # first trading day close as baseline
+        close_price = h["Close"].iloc[-1]
+        ytd_pct     = ((close_price - open_price) / open_price) * 100
+        ytd_pts     = close_price - open_price
+        ytd_high    = h["High"].max()
+        ytd_low     = h["Low"].min()
 
-    return {"score": None, "rating": "N/A", "source": "none"}
+        # 52-week high/low
+        h52 = yf.Ticker("^GSPC").history(period="1y")
+        wk52_high = h52["High"].max()
+        wk52_low  = h52["Low"].min()
+
+        # Monthly returns
+        months_done = []
+        for month in range(1, today.month + 1):
+            mdata = h[h.index.month == month]["Close"]
+            if len(mdata) < 2:
+                continue
+            mpct = ((mdata.iloc[-1] - mdata.iloc[0]) / mdata.iloc[0]) * 100
+            is_current = (month == today.month)
+            months_done.append({
+                "name": datetime(today.year, month, 1).strftime("%b"),
+                "pct":  mpct,
+                "mtd":  is_current,
+            })
+
+        # Sparkline: normalize closes to 0-50 range for SVG
+        closes_list = h["Close"].tolist()
+        mn, mx = min(closes_list), max(closes_list)
+        rng = mx - mn if mx != mn else 1
+        total = len(closes_list)
+        svg_w = 362
+        points = []
+        for i, c in enumerate(closes_list):
+            x = i / (total - 1) * svg_w
+            y = 50 - ((c - mn) / rng) * 44   # y=50 is bottom, y=6 is top
+            points.append((x, y))
+
+        return {
+            "ytd_pct":    ytd_pct,
+            "ytd_pts":    ytd_pts,
+            "open_price": open_price,
+            "close":      close_price,
+            "ytd_high":   ytd_high,
+            "ytd_low":    ytd_low,
+            "wk52_high":  wk52_high,
+            "wk52_low":   wk52_low,
+            "months":     months_done,
+            "sparkline":  points,
+        }
+    except Exception as e:
+        print(f"YTD fetch failed: {e}")
+        return None
 
 
 def fetch_baseball():
@@ -330,7 +349,6 @@ def baseball_html(games, date_label):
         <div class="bb-game">
           <div class="bb-team">
             <div class="bb-abbr">{g['away']}</div>
-            <div class="bb-name">{g['away_name']}</div>
           </div>
           <div class="bb-mid">
             <div class="bb-final">Final</div>
@@ -342,13 +360,96 @@ def baseball_html(games, date_label):
           </div>
           <div class="bb-team">
             <div class="bb-abbr">{g['home']}</div>
-            <div class="bb-name">{g['home_name']}</div>
           </div>
         </div>"""
     return rows
 
 
-# ── Full HTML email ───────────────────────────────────────────────────────────
+def ytd_html(ytd):
+    if not ytd:
+        return '<div style="padding:12px 16px;font-size:12px;color:#888;">YTD data unavailable.</div>'
+
+    pct_str  = f"{'+' if ytd['ytd_pct'] >= 0 else ''}{ytd['ytd_pct']:.2f}%"
+    pts_str  = f"{'+' if ytd['ytd_pts'] >= 0 else ''}{ytd['ytd_pts']:,.0f} pts"
+    clr      = "#111" if ytd['ytd_pct'] >= 0 else "#888"
+
+    # Build SVG sparkline from real price points
+    pts = ytd["sparkline"]
+    if len(pts) >= 2:
+        path_d = f"M{pts[0][0]:.1f},{pts[0][1]:.1f}"
+        for x, y in pts[1:]:
+            path_d += f" L{x:.1f},{y:.1f}"
+        last_x, last_y = pts[-1]
+        area_d = f"M{pts[0][0]:.1f},50 " + path_d[1:] + f" L{last_x:.1f},50 Z"
+    else:
+        path_d = "M0,25 L362,25"
+        area_d = ""
+        last_x, last_y = 362, 25
+
+    # Monthly bars
+    months = ytd["months"]
+    max_abs = max(abs(m["pct"]) for m in months) if months else 1
+    month_cells = ""
+    for m in months:
+        pct   = m["pct"]
+        h_px  = max(4, round(abs(pct) / max_abs * 34))
+        color = "#555" if m["mtd"] else ("#111" if pct >= 0 else "#ccc")
+        align = "flex-end" if pct >= 0 else "flex-start"
+        sign_s = "+" if pct >= 0 else "−"
+        cc_s   = "#111" if pct >= 0 else "#888"
+        mtd_label = m['name'] + ("*" if m["mtd"] else "")
+        month_cells += f"""
+        <div style="text-align:center;">
+          <div style="font-size:8px;letter-spacing:.05em;text-transform:uppercase;color:#888;margin-bottom:2px;">{mtd_label}</div>
+          <div style="height:36px;display:flex;align-items:{align};justify-content:center;">
+            <div style="width:18px;height:{h_px}px;background:{color};"></div>
+          </div>
+          <div style="font-size:8.5px;color:{cc_s};margin-top:2px;">{sign_s}{abs(pct):.2f}%</div>
+        </div>"""
+
+    mtd_note = '<div style="font-size:8px;color:#bbb;margin-top:6px;">* Month-to-date</div>' if any(m["mtd"] for m in months) else ""
+
+    return f"""
+    <div style="padding:14px 16px 12px;border-bottom:1px solid #ccc;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+        <div>
+          <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#888;margin-bottom:2px;">YTD Return</div>
+          <div style="font-family:'Playfair Display',serif;font-size:32px;font-weight:900;line-height:1;color:{clr};">{pct_str}</div>
+          <div style="font-size:11px;color:#555;margin-top:2px;">{pts_str} &nbsp;·&nbsp; Jan 1: {ytd['open_price']:,.0f}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px;color:#666;margin-bottom:4px;line-height:1.4;">52W High &nbsp;<strong style="color:#111;">{ytd['wk52_high']:,.0f}</strong></div>
+          <div style="font-size:10px;color:#666;margin-bottom:4px;line-height:1.4;">52W Low &nbsp;<strong style="color:#111;">{ytd['wk52_low']:,.0f}</strong></div>
+          <div style="font-size:10px;color:#666;margin-bottom:4px;line-height:1.4;">YTD High &nbsp;<strong style="color:#111;">{ytd['ytd_high']:,.0f}</strong></div>
+          <div style="font-size:10px;color:#666;line-height:1.4;">YTD Low &nbsp;<strong style="color:#111;">{ytd['ytd_low']:,.0f}</strong></div>
+        </div>
+      </div>
+      <svg viewBox="0 0 362 55" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:55px;display:block;">
+        <defs>
+          <linearGradient id="spxGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#111" stop-opacity="0.12"/>
+            <stop offset="100%" stop-color="#111" stop-opacity="0.01"/>
+          </linearGradient>
+        </defs>
+        <line x1="0" y1="50" x2="362" y2="50" stroke="#eee" stroke-width="1"/>
+        <path d="{area_d}" fill="url(#spxGrad)"/>
+        <path d="{path_d}" fill="none" stroke="#111" stroke-width="1.5" stroke-linejoin="round"/>
+        <circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="3" fill="#111"/>
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:8.5px;color:#aaa;margin-top:3px;margin-bottom:12px;">
+        <span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span><span>Oct</span><span>Nov</span><span>Dec</span>
+      </div>
+      <div style="border-top:1px solid #eee;padding-top:10px;">
+        <div style="font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#888;margin-bottom:8px;">Monthly Returns</div>
+        <div style="display:grid;grid-template-columns:repeat({len(months)},1fr);gap:3px;">
+          {month_cells}
+        </div>
+        {mtd_note}
+      </div>
+    </div>"""
+
+
+
 
 def build_html(d):
     indices_html = "".join(f"""
@@ -392,13 +493,8 @@ body{{background:#f4f4f0;padding:16px 8px;}}
 .ic2{{font-size:clamp(10px,2.5vw,11.5px);margin-top:2px;}}
 .up{{color:#111;}}.dn{{color:#888;}}
 .brow{{padding:5px 16px;font-size:clamp(10px,2.5vw,10.5px);color:#555;border-bottom:1px solid #ccc;background:#f9f9f9;display:flex;flex-wrap:wrap;gap:4px 16px;}}
-.fg-wrap{{padding:14px 16px;border-bottom:1px solid #ccc;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}}
-.fg-gauge{{position:relative;width:130px;height:80px;flex-shrink:0;}}
-.fg-score{{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);text-align:center;white-space:nowrap;}}
-.fg-num{{font-family:'Playfair Display',serif;font-size:22px;font-weight:900;line-height:1;}}
-.fg-lbl{{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#555;margin-top:1px;}}
-.fg-detail{{flex:1;min-width:140px;}}
-.fg-title{{font-size:9px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;margin-bottom:6px;}}
+.bb-team{{display:flex;flex-direction:column;align-items:center;width:60px;flex-shrink:0;}}
+.bb-abbr{{font-family:'Playfair Display',serif;font-size:18px;font-weight:700;letter-spacing:.02em;}}
 .tc{{display:grid;grid-template-columns:1fr;border-bottom:1px solid #ccc;}}
 @media(min-width:480px){{.tc{{grid-template-columns:1fr 1fr;}}}}
 .cl{{padding:12px 16px;border-bottom:1px solid #ccc;}}.cr{{padding:12px 16px;}}
@@ -455,8 +551,8 @@ body{{background:#f4f4f0;padding:16px 8px;}}
     <span>VIX: <strong>{fmt(d['vix'])}</strong></span>
   </div>
 
-  <div class="sl">Market Sentiment</div>
-  {fear_greed_html(d['fear_greed'])}
+  <div class="sl">S&amp;P 500 — Year to Date {datetime.now().year}</div>
+  {ytd_html(d['ytd'])}
 
   <div class="sl">Movers</div>
   <div class="tc">
@@ -500,7 +596,7 @@ def main():
     print("Fetching market data...")
     data = fetch()
     print(f"Date: {data['date_str']}")
-    print(f"Fear & Greed: {data['fear_greed']['score']} ({data['fear_greed']['rating']}) via {data['fear_greed']['source']}")
+    print(f"YTD: {data['ytd']['ytd_pct']:.2f}%" if data['ytd'] else "YTD: unavailable")
     print(f"Baseball games: {len(data['baseball'])}")
 
     html = build_html(data)
