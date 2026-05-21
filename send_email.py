@@ -149,20 +149,6 @@ def fetch_ytd():
         wk52_high = h52["High"].max()
         wk52_low  = h52["Low"].min()
 
-        # Monthly returns
-        months_done = []
-        for month in range(1, today.month + 1):
-            mdata = h[h.index.month == month]["Close"]
-            if len(mdata) < 2:
-                continue
-            mpct = ((mdata.iloc[-1] - mdata.iloc[0]) / mdata.iloc[0]) * 100
-            is_current = (month == today.month)
-            months_done.append({
-                "name": datetime(today.year, month, 1).strftime("%b"),
-                "pct":  mpct,
-                "mtd":  is_current,
-            })
-
         # Sparkline: normalize closes to 0-50 range for SVG
         closes_list = h["Close"].tolist()
         mn, mx = min(closes_list), max(closes_list)
@@ -184,7 +170,6 @@ def fetch_ytd():
             "ytd_low":    ytd_low,
             "wk52_high":  wk52_high,
             "wk52_low":   wk52_low,
-            "months":     months_done,
             "sparkline":  points,
         }
     except Exception as e:
@@ -369,11 +354,11 @@ def ytd_html(ytd):
     if not ytd:
         return '<div style="padding:12px 16px;font-size:12px;color:#888;">YTD data unavailable.</div>'
 
-    pct_str  = f"{'+' if ytd['ytd_pct'] >= 0 else ''}{ytd['ytd_pct']:.2f}%"
-    pts_str  = f"{'+' if ytd['ytd_pts'] >= 0 else ''}{ytd['ytd_pts']:,.0f} pts"
-    clr      = "#111" if ytd['ytd_pct'] >= 0 else "#888"
+    pct_str = f"{'+' if ytd['ytd_pct'] >= 0 else ''}{ytd['ytd_pct']:.2f}%"
+    pts_str = f"{'+' if ytd['ytd_pts'] >= 0 else ''}{ytd['ytd_pts']:,.0f} pts since Jan 1"
+    clr     = "#111" if ytd['ytd_pct'] >= 0 else "#888"
 
-    # Build SVG sparkline from real price points
+    # Sparkline from real price points
     pts = ytd["sparkline"]
     if len(pts) >= 2:
         path_d = f"M{pts[0][0]:.1f},{pts[0][1]:.1f}"
@@ -386,65 +371,35 @@ def ytd_html(ytd):
         area_d = ""
         last_x, last_y = 362, 25
 
-    # Monthly bars
-    months = ytd["months"]
-    max_abs = max(abs(m["pct"]) for m in months) if months else 1
-    month_cells = ""
-    for m in months:
-        pct   = m["pct"]
-        h_px  = max(4, round(abs(pct) / max_abs * 34))
-        color = "#555" if m["mtd"] else ("#111" if pct >= 0 else "#ccc")
-        align = "flex-end" if pct >= 0 else "flex-start"
-        sign_s = "+" if pct >= 0 else "−"
-        cc_s   = "#111" if pct >= 0 else "#888"
-        mtd_label = m['name'] + ("*" if m["mtd"] else "")
-        month_cells += f"""
-        <div style="text-align:center;">
-          <div style="font-size:8px;letter-spacing:.05em;text-transform:uppercase;color:#888;margin-bottom:2px;">{mtd_label}</div>
-          <div style="height:36px;display:flex;align-items:{align};justify-content:center;">
-            <div style="width:18px;height:{h_px}px;background:{color};"></div>
-          </div>
-          <div style="font-size:8.5px;color:{cc_s};margin-top:2px;">{sign_s}{abs(pct):.2f}%</div>
-        </div>"""
-
-    mtd_note = '<div style="font-size:8px;color:#bbb;margin-top:6px;">* Month-to-date</div>' if any(m["mtd"] for m in months) else ""
-
     return f"""
-    <div style="padding:14px 16px 12px;border-bottom:1px solid #ccc;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+    <div style="padding:12px 16px;border-bottom:1px solid #ccc;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
         <div>
-          <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#888;margin-bottom:2px;">YTD Return</div>
-          <div style="font-family:'Playfair Display',serif;font-size:32px;font-weight:900;line-height:1;color:{clr};">{pct_str}</div>
-          <div style="font-size:11px;color:#555;margin-top:2px;">{pts_str} &nbsp;·&nbsp; Jan 1: {ytd['open_price']:,.0f}</div>
+          <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#888;margin-bottom:1px;">YTD Return</div>
+          <div style="font-family:'Playfair Display',serif;font-size:28px;font-weight:900;line-height:1;color:{clr};">{pct_str}</div>
+          <div style="font-size:10px;color:#777;margin-top:2px;">{pts_str}</div>
         </div>
-        <div style="text-align:right;">
-          <div style="font-size:10px;color:#666;margin-bottom:4px;line-height:1.4;">52W High &nbsp;<strong style="color:#111;">{ytd['wk52_high']:,.0f}</strong></div>
-          <div style="font-size:10px;color:#666;margin-bottom:4px;line-height:1.4;">52W Low &nbsp;<strong style="color:#111;">{ytd['wk52_low']:,.0f}</strong></div>
-          <div style="font-size:10px;color:#666;margin-bottom:4px;line-height:1.4;">YTD High &nbsp;<strong style="color:#111;">{ytd['ytd_high']:,.0f}</strong></div>
-          <div style="font-size:10px;color:#666;line-height:1.4;">YTD Low &nbsp;<strong style="color:#111;">{ytd['ytd_low']:,.0f}</strong></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;text-align:right;">
+          <div style="font-size:10px;color:#666;">YTD High</div><div style="font-size:10px;font-weight:700;">{ytd['ytd_high']:,.0f}</div>
+          <div style="font-size:10px;color:#666;">YTD Low</div><div style="font-size:10px;font-weight:700;">{ytd['ytd_low']:,.0f}</div>
+          <div style="font-size:10px;color:#666;">52W High</div><div style="font-size:10px;font-weight:700;">{ytd['wk52_high']:,.0f}</div>
+          <div style="font-size:10px;color:#666;">52W Low</div><div style="font-size:10px;font-weight:700;">{ytd['wk52_low']:,.0f}</div>
         </div>
       </div>
-      <svg viewBox="0 0 362 55" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:55px;display:block;">
+      <svg viewBox="0 0 362 52" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:52px;display:block;">
         <defs>
           <linearGradient id="spxGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#111" stop-opacity="0.12"/>
+            <stop offset="0%" stop-color="#111" stop-opacity="0.10"/>
             <stop offset="100%" stop-color="#111" stop-opacity="0.01"/>
           </linearGradient>
         </defs>
         <line x1="0" y1="50" x2="362" y2="50" stroke="#eee" stroke-width="1"/>
         <path d="{area_d}" fill="url(#spxGrad)"/>
-        <path d="{path_d}" fill="none" stroke="#111" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="{path_d}" fill="none" stroke="#111" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
         <circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="3" fill="#111"/>
       </svg>
-      <div style="display:flex;justify-content:space-between;font-size:8.5px;color:#aaa;margin-top:3px;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;font-size:8px;color:#bbb;margin-top:3px;">
         <span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span><span>Oct</span><span>Nov</span><span>Dec</span>
-      </div>
-      <div style="border-top:1px solid #eee;padding-top:10px;">
-        <div style="font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#888;margin-bottom:8px;">Monthly Returns</div>
-        <div style="display:grid;grid-template-columns:repeat({len(months)},1fr);gap:3px;">
-          {month_cells}
-        </div>
-        {mtd_note}
       </div>
     </div>"""
 
@@ -478,11 +433,11 @@ def build_html(d):
 *{{box-sizing:border-box;margin:0;padding:0;}}
 body{{background:#f4f4f0;padding:16px 8px;}}
 .ew{{font-family:'Libre Baskerville',Georgia,serif;background:#fff;color:#111;max-width:600px;margin:0 auto;border:1px solid #bbb;}}
-.eh{{border-bottom:4px double #111;padding:14px 20px 10px;text-align:center;}}
-.flag{{font-family:'Playfair Display',Georgia,serif;font-size:clamp(24px,6vw,36px);font-weight:900;letter-spacing:-1px;line-height:1;}}
-.tagline{{font-size:clamp(10px,2.5vw,11px);color:#555;margin:4px 0 5px;line-height:1.5;}}
-.tagline a{{color:#111;font-weight:700;text-decoration:underline;}}
-.hm{{display:flex;justify-content:space-between;font-size:clamp(8px,2vw,10px);border-top:1px solid #111;border-bottom:1px solid #111;padding:4px 0;margin-top:6px;letter-spacing:.04em;text-transform:uppercase;flex-wrap:wrap;gap:2px;}}
+.eh{{border-bottom:4px double #111;padding:10px 14px 8px;text-align:center;}}
+.flag{{font-family:'Playfair Display',Georgia,serif;font-size:clamp(22px,5.5vw,32px);font-weight:900;letter-spacing:-1px;line-height:1;}}
+.tagline{{font-size:9px;color:#666;margin:3px 0 4px;line-height:1.4;}}
+.tagline a{{color:#111;font-weight:700;text-decoration:none;}}
+.hm{{display:flex;justify-content:space-between;font-size:8px;border-top:1px solid #111;border-bottom:1px solid #111;padding:3px 0;margin-top:4px;letter-spacing:.04em;text-transform:uppercase;flex-wrap:wrap;gap:1px;}}
 .sl{{font-size:9px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;border-bottom:1px solid #aaa;border-top:2px solid #111;padding:5px 16px;background:#fafafa;}}
 .ig{{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #ccc;}}
 .ic{{padding:12px 8px;border-right:1px solid #ddd;border-bottom:1px solid #ddd;text-align:center;}}
@@ -533,13 +488,8 @@ body{{background:#f4f4f0;padding:16px 8px;}}
 
   <div class="eh">
     <div class="flag">The FiDi Market Close</div>
-    <div class="tagline">
-      Presented by <a href="https://www.learnatfidi.com">Financial District</a> &nbsp;·&nbsp;
-      We teach kids how to invest. &nbsp;·&nbsp;
-      <a href="https://www.learnatfidi.com">LearnAtFidi.com</a>
-    </div>
+    <div class="tagline">Presented by <a href="https://www.learnatfidi.com">Financial District</a> &nbsp;·&nbsp; We teach kids how to invest &nbsp;·&nbsp; <a href="https://www.learnatfidi.com">LearnAtFidi.com</a></div>
     <div class="hm">
-      <span>{d['vol_str']}</span>
       <span>{d['date_str']}</span>
       <span>Markets · Economy · Capital</span>
     </div>
@@ -547,9 +497,6 @@ body{{background:#f4f4f0;padding:16px 8px;}}
 
   <div class="sl">Market Indices — Closing Prices</div>
   <div class="ig">{indices_html}</div>
-  <div class="brow">
-    <span>VIX: <strong>{fmt(d['vix'])}</strong></span>
-  </div>
 
   <div class="sl">S&amp;P 500 — Year to Date {datetime.now().year}</div>
   {ytd_html(d['ytd'])}
