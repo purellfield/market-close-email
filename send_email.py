@@ -40,39 +40,6 @@ def fetch():
     vix_h = yf.Ticker("^VIX").history(period="1d")
     vix   = vix_h["Close"].iloc[-1] if len(vix_h) > 0 else 0
 
-    # ── Top movers with 52-week range ─────────────────────────────────────────
-    sp500_sample = [
-        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","LLY","JPM",
-        "V","XOM","UNH","AVGO","MA","PG","JNJ","HD","ABBV","MRK","COST","CVX",
-        "BAC","CRM","NFLX","AMD","WMT","KO","PEP","TMO","ADBE","ACN","MCD",
-        "DHR","CSCO","ABT","TXN","LIN","DIS","NEE","ORCL","QCOM","RTX","BMY",
-        "AMGN","CAT","BA","GS","BLK","SPGI"
-    ]
-    data   = yf.download(sp500_sample, period="1y", progress=False, auto_adjust=True)
-    closes = data["Close"]
-    highs  = data["High"]
-    lows   = data["Low"]
-
-    movers = []
-    for ticker in sp500_sample:
-        if ticker not in closes.columns:
-            continue
-        col = closes[ticker].dropna()
-        if len(col) < 2:
-            continue
-        prev, close = col.iloc[-2], col.iloc[-1]
-        pct       = ((close - prev) / prev) * 100
-        wk52_high = highs[ticker].dropna().max()
-        wk52_low  = lows[ticker].dropna().min()
-        rng       = wk52_high - wk52_low
-        pos       = ((close - wk52_low) / rng * 100) if rng > 0 else 50
-        movers.append({"ticker": ticker, "price": close, "pct": pct,
-                       "wk52_high": wk52_high, "wk52_low": wk52_low, "wk52_pos": pos})
-
-    movers.sort(key=lambda x: x["pct"], reverse=True)
-    gainers = movers[:5]
-    losers  = movers[-5:][::-1]
-
     # ── Sectors ───────────────────────────────────────────────────────────────
     sector_tickers = {
         "Technology":    "XLK", "Healthcare":    "XLV", "Financials":    "XLF",
@@ -119,8 +86,6 @@ def fetch():
         "vol_str":     vol_str,
         "indices":     indices,
         "vix":         vix,
-        "gainers":     gainers,
-        "losers":      losers,
         "sectors":     sectors,
         "commodities": commodities,
         "ytd":         ytd,
@@ -255,72 +220,6 @@ def mover_rows(stocks):
     return rows
 
 
-def fear_greed_html(fg):
-    if fg["score"] is None:
-        return '<div style="padding:12px 16px;font-size:12px;color:#888;">Sentiment data unavailable today.</div>'
-
-    score  = fg["score"]
-    rating = fg["rating"]
-
-    # needle position on semicircle (0=left, 100=right)
-    angle_rad = math.radians(-90 + score * 1.8)
-    nx = 65 + 48 * math.cos(angle_rad)
-    ny = 65 + 48 * math.sin(angle_rad)
-
-    # active segment color
-    if score < 25:
-        arc_color = "#999"
-    elif score < 45:
-        arc_color = "#bbb"
-    elif score < 55:
-        arc_color = "#ccc"
-    elif score < 75:
-        arc_color = "#555"
-    else:
-        arc_color = "#111"
-
-    # score band labels for the gauge
-    bands = [
-        ("Extreme Fear", 0),
-        ("Fear", 25),
-        ("Neutral", 45),
-        ("Greed", 55),
-        ("Extreme Greed", 75),
-    ]
-    bands_html = ""
-    for label, threshold in bands:
-        active = "font-weight:700;color:#111;" if rating.lower() in label.lower() or label.lower() in rating.lower() else "color:#bbb;"
-        bands_html += f'<div style="font-size:9px;{active}padding:2px 0;">{label}</div>'
-
-    source_note = "" if fg["source"] == "alternative.me" else '<span style="font-size:9px;color:#bbb;"> (derived from VIX)</span>'
-
-    return f"""
-    <div class="fg-wrap">
-      <div class="fg-gauge">
-        <svg viewBox="0 0 130 70" xmlns="http://www.w3.org/2000/svg" style="width:130px;height:68px;">
-          <path d="M10,65 A55,55 0 0,1 120,65" fill="none" stroke="#eee" stroke-width="10" stroke-linecap="round"/>
-          <path d="M10,65 A55,55 0 0,1 37,21"   fill="none" stroke="#ddd" stroke-width="10" stroke-linecap="butt"/>
-          <path d="M37,21 A55,55 0 0,1 65,10"   fill="none" stroke="#ccc" stroke-width="10" stroke-linecap="butt"/>
-          <path d="M65,10 A55,55 0 0,1 80,12"   fill="none" stroke="#ccc" stroke-width="10" stroke-linecap="butt"/>
-          <path d="M80,12 A55,55 0 0,1 107,31"  fill="none" stroke="{arc_color}" stroke-width="10" stroke-linecap="butt"/>
-          <path d="M107,31 A55,55 0 0,1 120,65" fill="none" stroke="#ddd" stroke-width="10" stroke-linecap="round"/>
-          <line x1="65" y1="65" x2="{nx:.1f}" y2="{ny:.1f}" stroke="#111" stroke-width="2" stroke-linecap="round"/>
-          <circle cx="65" cy="65" r="3.5" fill="#111"/>
-          <text x="5"  y="78" font-size="6" fill="#aaa" font-family="serif">Fear</text>
-          <text x="95" y="78" font-size="6" fill="#aaa" font-family="serif">Greed</text>
-        </svg>
-        <div class="fg-score">
-          <div class="fg-num">{score}</div>
-          <div class="fg-lbl">{rating}{source_note}</div>
-        </div>
-      </div>
-      <div class="fg-detail">
-        <div class="fg-title">Sentiment Scale</div>
-        {bands_html}
-      </div>
-    </div>"""
-
-
 def baseball_html(games, date_label):
     if not games:
         return '<div style="padding:12px 16px;font-size:12px;color:#888;">No games found for tracked teams yesterday.</div>'
@@ -402,8 +301,6 @@ def ytd_html(ytd):
         <span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span><span>Oct</span><span>Nov</span><span>Dec</span>
       </div>
     </div>"""
-
-
 
 
 def build_html(d):
@@ -500,24 +397,6 @@ body{{background:#f4f4f0;padding:16px 8px;}}
 
   <div class="sl">S&amp;P 500 — Year to Date {datetime.now().year}</div>
   {ytd_html(d['ytd'])}
-
-  <div class="sl">Movers</div>
-  <div class="tc">
-    <div class="cl">
-      <div class="ch">Top Gainers</div>
-      <table class="st">
-        <thead><tr><th>Ticker</th><th class="ra">Price</th><th class="ra">Chg%</th><th class="ra" style="font-size:8px;">52W Rng</th></tr></thead>
-        <tbody>{mover_rows(d['gainers'])}</tbody>
-      </table>
-    </div>
-    <div class="cr">
-      <div class="ch">Top Decliners</div>
-      <table class="st">
-        <thead><tr><th>Ticker</th><th class="ra">Price</th><th class="ra">Chg%</th><th class="ra" style="font-size:8px;">52W Rng</th></tr></thead>
-        <tbody>{mover_rows(d['losers'])}</tbody>
-      </table>
-    </div>
-  </div>
 
   <div class="sl">Sector Performance</div>
   <div class="sb">{sector_bars_html(d['sectors'])}</div>
